@@ -10,6 +10,12 @@ from sklearn.metrics.pairwise import cosine_similarity
 import re
 from dotenv import load_dotenv
 import os
+import requests
+from bs4 import BeautifulSoup
+
+
+
+#%%
 
 
 #%%
@@ -90,6 +96,30 @@ def correct_transcription_in_chunks(transcript, max_chars=5000):
         corrected_chunks.append(response.choices[0].message.content.strip())
 
     return " ".join(corrected_chunks)  # Combine all corrected chunks
+
+def get_trending_hashtags():
+    url = "https://trends24.in/united-states/"
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    raw_trends = [tag.text.strip() for tag in soup.select(".stat-card-list")]
+    
+    # ✅ **Remove 'for X hrs' and 'with X tweets' using regex**
+    cleaned_trends = []
+    for trend in raw_trends:
+        # Remove patterns like "for X hrs" and "with X tweets"
+        trend_cleaned = re.sub(r"for \d+ hrs|with [\d\.]+[MK]? tweet[s]?", "", trend).strip()
+        
+        # Split multi-line trends & add individually
+        cleaned_trends.extend(trend_cleaned.split("\n"))
+    
+    # ✅ Remove empty strings and duplicates
+    trending_hashtags = list(set(filter(None, cleaned_trends)))
+
+    return trending_hashtags  # Return top 10 hashtags
+
+# ✅ Get the cleaned trending hashtags
+trending_hashtags = get_trending_hashtags()
 
 # ✅ Extract word-level timestamps and group sentences into longer clips
 nlp = spacy.load("en_core_web_md")
@@ -254,6 +284,7 @@ def rank_clips_advanced(clips, nlp, seo_tags, min_time_gap=180):
 
     # ✅ **Create reference text combining SEO tags & trending topics**
     reference_text = f"{seo_text}"
+    trending_text = " ".join(trending_hashtags)
 
     # ✅ **Precompute NLP embeddings for SEO Tags**
     reference_doc = nlp(reference_text)
@@ -264,6 +295,10 @@ def rank_clips_advanced(clips, nlp, seo_tags, min_time_gap=180):
 
     ranked_clips = []
     used_timestamps = set()
+    
+    # ✅ **Convert trending hashtags to SpaCy document**
+    trending_doc = nlp(trending_text)
+
 
     # ✅ **Expanded Intro/Outro Filtering with Regex**
     banned_phrases = [
@@ -307,6 +342,9 @@ def rank_clips_advanced(clips, nlp, seo_tags, min_time_gap=180):
         # ✅ **2. NLP-Based Relevance Score (Measures Topic Alignment)**
         nlp_score = reference_doc.similarity(sentence_doc) * 10  
 
+        # ✅ **3. Trending Hashtag Semantic Similarity (SpaCy)**
+        hashtag_similarity = trending_doc.similarity(sentence_doc) * 20  # Scale to 0-10
+
         # ✅ **3. Sentiment Score (Measures Emotional Intensity)**
         sentiment_score = abs(TextBlob(sentence).sentiment.polarity) * 10 
 
@@ -348,6 +386,7 @@ def rank_clips_advanced(clips, nlp, seo_tags, min_time_gap=180):
         final_score = (
             (similarity_score) +  
             (nlp_score) +  
+            (hashtag_similarity) +
             (sentiment_score) +  
             (keyword_score) +  
             (stats_score) +  
@@ -360,7 +399,7 @@ def rank_clips_advanced(clips, nlp, seo_tags, min_time_gap=180):
         ranked_clips.append((
             sentence, start, end, final_score, similarity_score, sentiment_score, 
             keyword_score, stats_score, nlp_score, length_bonus, 
-            quote_score, emotion_score, rhetorical_score
+            quote_score, emotion_score, rhetorical_score, hashtag_similarity
         ))
 
     # ✅ **Return Top 5 Best & Diverse Clips**
@@ -492,7 +531,7 @@ def save_podcast_summary(important_clips, episode_titles, seo_tags, corrected_tr
     # ✅ Add Podcast Clips Section
     doc.add_heading("🎬 Selected Podcast Clips (with Score Breakdown)", level=2)
 
-    for i, (clip, start_time, end_time, final_score, seo_similarity, sentiment, keyword_score, stats, nlp_score, length_bonus, quote_score, emotion_score, rhetorical_score) in enumerate(important_clips):
+    for i, (clip, start_time, end_time, final_score, seo_similarity, sentiment, keyword_score, stats, nlp_score, length_bonus, quote_score, emotion_score, rhetorical_score, hashtag_similarity) in enumerate(important_clips):
         formatted_start = f"{int(start_time // 60)}:{int(start_time % 60):02d}"
         formatted_end = f"{int(end_time // 60)}:{int(end_time % 60):02d}"
         
@@ -500,7 +539,7 @@ def save_podcast_summary(important_clips, episode_titles, seo_tags, corrected_tr
         doc.add_paragraph(f"[{formatted_start} - {formatted_end}] {clip}")
 
         # ✅ Create Table for Scores (Header + Metrics)
-        num_rows = 1 + 10  # 1 header row + 10 metric rows
+        num_rows = 12 # 1 header row + 11 metric rows
         table = doc.add_table(rows=num_rows, cols=3)
         table.style = "Table Grid"
 
@@ -514,6 +553,7 @@ def save_podcast_summary(important_clips, episode_titles, seo_tags, corrected_tr
             ("Final Score", f"{final_score:.2f}", "Aggregated ranking"),
             ("SEO Similarity", f"{seo_similarity:.2f}", "Boosts visibility"),
             ("NLP Relevance", f"{nlp_score:.2f}", "Measures topic alignment"),
+            ("Trending Score", f"{hashtag_similarity:.2f}", "Measures against trending topics"),
             ("Sentiment Score", f"{sentiment:.2f}", "Higher = more engaging"),
             ("Keyword Score", f"{keyword_score}", "Measures key phrase density"),
             ("Stats & Figures", f"{stats}", "Mentions of numbers/data"),
